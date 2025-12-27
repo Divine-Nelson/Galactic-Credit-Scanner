@@ -8,9 +8,12 @@ import argparse
 import os
 import glob
 import cv2 #type: ignore
-from features import analyze_image, detect_card
+from features import analyze_image, REF_CARD
 
 TOTAL_SUM = 0
+REF_CARD["w"] = None
+REF_CARD["h"] = None
+REF_CARD["ratio"] = None
 # ================================================================
 #  IMAGE PATH HANDLING
 # ================================================================
