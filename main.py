@@ -8,22 +8,26 @@ import argparse
 import os
 import glob
 import cv2 #type: ignore
-from features import analyze_image
+from features import analyze_image, detect_card
 
-
+TOTAL_SUM = 0
 # ================================================================
 #  IMAGE PATH HANDLING
 # ================================================================
 
 def list_image_paths(path):
-    """Return list of images from a path or directory."""
+    """Return list of image file paths from a file or directory."""
     if os.path.isdir(path):
-        exts = ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.tif", "*.tiff"]
         files = []
-        for e in exts:
-            files.extend(glob.glob(os.path.join(path, e)))
+        for f in os.listdir(path):
+            full = os.path.join(path, f)
+            if os.path.isfile(full):
+                ext = os.path.splitext(f)[1].lower()
+                if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]:
+                    files.append(full)
         return sorted(files)
     return [path]
+
 
 
 def ensure_dir(path):
@@ -38,6 +42,8 @@ def ensure_dir(path):
 # ================================================================
 
 def process_images(path, display, save_dir):
+    global TOTAL_SUM
+
     paths = list_image_paths(path)
 
     if not paths:
@@ -55,19 +61,32 @@ def process_images(path, display, save_dir):
         result = analyze_image(img)
         overlay = result["overlay"]
 
-        # Extract info
         cards = result["cards"]
         if cards:
-            print("Detected value:", cards[0]["value"])
-            print("Digits:", cards[0]["digits"])
-            print("Color:", cards[0]["color"])
+            card = cards[0]
+
+            print("Digits:", card["digits"])
+            print("Color:", card["color"])
+            print("Value:", card["value"])
+            print("Fake:", card["fake"])
+
+            # 💰 Money-counter logic
+            if not card["fake"]:
+                TOTAL_SUM += card["value"]
+
+            print("Running total:", TOTAL_SUM)
+
         else:
             print("No card detected.")
 
         # Display window
         if display:
             cv2.imshow("Result", overlay)
-            cv2.waitKey(1)
+
+            if result.get("dbg_card") is not None:
+                cv2.imshow("Detected Card Contour", result["dbg_card"])
+
+            cv2.waitKey(0)
 
         # Save if requested
         if save_dir:
@@ -78,6 +97,7 @@ def process_images(path, display, save_dir):
     if display:
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+
 
 
 # ================================================================
@@ -157,3 +177,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+"""
+python main.py --images images/good/good_1.jpg  --display
+python main.py --images images/sedate_images/  --display
+python main.py --images images/fake/  --display
+python main.py --images images/zahras_images/  --display
+python main.py --video videos/test_video.mp4  --display
+python main.py --webcam 0  --display
+"""

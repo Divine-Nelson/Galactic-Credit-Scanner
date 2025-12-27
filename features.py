@@ -10,6 +10,16 @@ import math
 from collections import Counter
 
 Debug = False
+REF_CARD = {
+    "w": None,
+    "h": None,
+    "ratio": None
+}
+
+SIZE_TOL = 0.05  # ±5%
+
+
+
 
 # =======================================================================
 # CHIP CLASSIFICATION
@@ -134,43 +144,102 @@ def convexity_defects_count(cnt):
 # =======================================================================
 
 def detect_card(image):
-    h, w = image.shape[:2]
-
+    """
+    Detect the card, return:
+    - warped card (for chip detection)
+    - debug image (original with contour)
+    - card metrics for fake detection
+    """
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    dark_mask = cv2.inRange(hsv, (0,0,0), (180,90,120))
-    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE,
-                                 np.ones((15,15),np.uint8), 3)
 
-    cnts, _ = cv2.findContours(dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # 1. Dark card segmentation
+    dark_mask = cv2.inRange(hsv, (0, 0, 0), (180, 90, 120))
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        np.ones((15, 15), np.uint8),
+        iterations=3
+    )
 
-    card_c = None
-    max_area = 0
-    dbg = image.copy()
-    for c in cnts:
-        area = cv2.contourArea(c)
-        x, y, w, h = cv2.boundingRect(c)
-        cv2.rectangle(dbg, (x, y), (x + w, y + h), (0, 255, 0), 1)
-        if area > max_area and area > (h*w)*0.02:
-            card_c = c
-            max_area = area
+    cnts, _ = cv2.findContours(
+        dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
 
-    if card_c is None:
-        print("No card detected.")
-        return None
+    if not cnts:
+        return None, None, None
 
+    # 2. Pick largest contour (the card)
+    card_c = max(cnts, key=cv2.contourArea)
+    area = cv2.contourArea(card_c)
+
+    # Reject tiny false positives
+    if area < image.shape[0] * image.shape[1] * 0.02:
+        return None, None, None
+
+    # 3. Bounding box → SIZE MEASUREMENT (important!)
+    x, y, w, h = cv2.boundingRect(card_c)
+    aspect_ratio = w / h
+
+    card_metrics = {
+        "bbox_w": w,
+        "bbox_h": h,
+        "aspect_ratio": aspect_ratio,
+        "area": area
+    }
+
+    # 4. Perspective warp for later chip detection
     peri = cv2.arcLength(card_c, True)
-    approx = cv2.approxPolyDP(card_c, 0.02*peri, True)
+    approx = cv2.approxPolyDP(card_c, 0.02 * peri, True)
 
     if len(approx) == 4:
-        box = approx.reshape(4,2).astype(np.float32)
+        box = approx.reshape(4, 2).astype(np.float32)
     else:
         rect = cv2.minAreaRect(card_c)
         box = cv2.boxPoints(rect).astype(np.float32)
-    if Debug:
-        cv2.imshow("DEBUG CARD DETECTION", dbg)
-        cv2.waitKey(1)
-        cv2.destroyAllWindows()
-    return warp_card(image, box)
+
+    warped = warp_card(image, box)
+
+    # 5. Debug image (persistent contour)
+    dbg = image.copy()
+    cv2.drawContours(dbg, [card_c], -1, (0, 255, 0), 2)
+    cv2.rectangle(dbg, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    print(card_metrics)
+    return warped, dbg, card_metrics
+
+def size_mismatch(card_metrics):
+    global REF_CARD
+    MIN_W, MAX_W = 490, 1000
+    MIN_H, MAX_H = 200, 240
+
+
+    w = card_metrics["bbox_w"]
+    h = card_metrics["bbox_h"]
+    ratio = card_metrics["aspect_ratio"]
+
+    if not (MIN_W <= w <= MAX_W and MIN_H <= h <= MAX_H):
+        return True
+    
+    # First card becomes reference
+    if REF_CARD["w"] is None:
+        REF_CARD["w"] = w
+        REF_CARD["h"] = h
+        REF_CARD["ratio"] = ratio
+        return False
+
+    # Width & height tolerance
+    if abs(w - REF_CARD["w"]) / REF_CARD["w"] > SIZE_TOL:
+        return True
+
+    if abs(h - REF_CARD["h"]) / REF_CARD["h"] > SIZE_TOL:
+        return True
+
+    # Aspect ratio check (very strong indicator)
+    if abs(ratio - REF_CARD["ratio"]) > SIZE_TOL:
+        return True
+    
+    return False
+
 
 
 # =======================================================================
@@ -211,8 +280,7 @@ def detect_chips(card):
 
         cnts, _ = cv2.findContours(
             mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
+        )        
         for c in cnts:
             area = cv2.contourArea(c)
             if area < 20 or area > 6000:
@@ -295,6 +363,25 @@ def group_by_x(chips, card_size):
 
     return groups
 
+# =======================================================================
+# Detect Fake Card
+# =======================================================================
+
+def is_fake_card(card, chips, dom_color, invalid_digit):
+    if card is None:
+        return True, "No card"
+
+    if size_mismatch(card):
+        return True, "Size mismatch"
+
+    for c in chips:
+        if c["color"] != dom_color:
+            return True, "Color misalignment"
+
+    if invalid_digit:
+        return True, "Invalid digit encoding"
+
+    return False, "Real"
 
 
 
@@ -303,15 +390,26 @@ def group_by_x(chips, card_size):
 # =======================================================================
 
 def analyze_image(image):
+    invalid_digit = False
 
-    card = detect_card(image)
+    # 1. Detect card
+    card, dbg_card, metrics = detect_card(image)
     if card is None:
-        return {"cards":[], "overlay":image}
+        return {"cards": [], "overlay": image, "dbg_card": None}
 
+    # 2. Detect chips
     chips = detect_chips(card)
-    groups = group_by_x(chips, card.shape[:2])
 
+    # 3. Dominant color
+    if chips:
+        dom_color = Counter([c["color"] for c in chips]).most_common(1)[0][0]
+    else:
+        dom_color = "blue"
+
+    # 4. Decode digits
+    groups = group_by_x(chips, card.shape[:2])
     digits = []
+
     for g in groups:
         g = clean_digit_group(g)
         if len(g) < 1 or len(g) > 6:
@@ -321,35 +419,73 @@ def analyze_image(image):
         try:
             digits.append(figure_from_array(chip_types))
         except ValueError:
-            print("⚠️ Skipping invalid digit group:", chip_types)
+            invalid_digit = True
+            print("⚠️ Invalid digit group:", chip_types)
 
+    # 5. FAKE DETECTION (ONE PLACE ONLY)
+    is_fake = False
+    reason = "Real"
+
+    if size_mismatch(metrics):
+        is_fake = True
+        reason = "Size mismatch"
+
+    elif invalid_digit:
+        is_fake = True
+        reason = "Invalid digit encoding"
+
+    else:
+        for c in chips:
+            if c["color"] != dom_color:
+                is_fake = True
+                reason = "Color misalignment"
+                break
     
-
-    if chips:
-        dom_color = Counter([c["color"] for c in chips]).most_common(1)[0][0]
-    else:
-        dom_color = "blue"
-
-    print("initial digits:", digits)
-    if dom_color in ["yellow", "blue"]:
-        digits = [d for d in digits if d != 0]
-
-    if not digits:
+    overlay = card.copy()
+    # 6. Compute value
+    if is_fake:
         value = 0
+        cv2.rectangle(
+            overlay,
+            (5, 5),
+            (overlay.shape[1] - 5, overlay.shape[0] - 5),
+            (0, 0, 255),
+            4
+        )
     else:
+        if dom_color in ["yellow", "blue"]:
+            digits = [d for d in digits if d != 0]
         value = compute_output_board(dom_color, digits)
 
-    overlay = card.copy()
-    for c in chips:
-        x,y,w,h = c["bbox"]
-        cv2.rectangle(overlay, (x,y),(x+w,y+h),(0,255,0),2)
-        cv2.putText(overlay, c["color"], (x,y-4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5,(0,255,0),2)
+    # 7. Overlay
 
-    cv2.putText(overlay, f"Value: {value}", (10,30),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0,(0,255,255),3)
+    for c in chips:
+        x, y, w, h = c["bbox"]
+        cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        cv2.putText(
+            overlay, c["color"], (x, y - 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2
+        )
+
+    if is_fake:
+        cv2.putText(
+            overlay, f"FAKE ({reason})", (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3
+        )
+    else:
+        cv2.putText(
+            overlay, f"Value: {value}", (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3
+        )
 
     return {
-        "cards":[{"chips":chips,"digits":digits,"color":dom_color,"value":value}],
-        "overlay":overlay
+        "cards": [{
+            "chips": chips,
+            "digits": digits,
+            "color": dom_color,
+            "value": value,
+            "fake": is_fake
+        }],
+        "overlay": overlay,
+        "dbg_card": dbg_card
     }
