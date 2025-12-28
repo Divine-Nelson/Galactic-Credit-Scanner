@@ -1,8 +1,8 @@
 import os
 
 COUNTER_FILE = "ref_counter.txt"
-IMAGE_PATH = "images/fake/"
-PREFIX = "fake_"
+IMAGE_PATH = "images/extra/"
+PREFIX = "good_"
 
 def read_counter():
     if not os.path.exists(COUNTER_FILE):

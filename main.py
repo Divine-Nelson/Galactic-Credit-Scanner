@@ -40,6 +40,18 @@ def ensure_dir(path):
     return path
 
 
+def preprocess_image(image):
+    """Resize image if too large for faster processing."""
+    max_dim = 1500
+    h, w = image.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = cv2.resize(image, (new_w, new_h))
+    
+    return image
+
 # ================================================================
 #  PROCESS IMAGES
 # ================================================================
@@ -61,6 +73,7 @@ def process_images(path, display, save_dir):
             print("Could not read image.")
             continue
 
+        img = preprocess_image(img)
         result = analyze_image(img)
         overlay = result["overlay"]
 
@@ -69,6 +82,8 @@ def process_images(path, display, save_dir):
             card = cards[0]
 
             print("Digits:", card["digits"])
+            print("Digits Group:", card["digits_groups"])
+            #print("Total Value:", card["total_value"])
             print("Color:", card["color"])
             print("Value:", card["value"])
             print("Fake:", card["fake"])

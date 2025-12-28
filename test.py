@@ -1,26 +1,53 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Tue Dec 23 00:49:27 2025
-
-@author: zahra
-"""
-
 import cv2 as cv #type: ignore
 import numpy as np
 
-img = cv.imread("5.bmp")
+def preprocess_image(image):
+    image = cv.resize(image, (0, 0), fx=0.5, fy=0.5)
+    output = image.copy()
 
-gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
-blur = cv.GaussianBlur(gray, (5,5), 0)
+    hsv = cv.cvtColor(output, cv.COLOR_BGR2HSV)
 
-edges1 = cv.Canny(gray, 30, 100)
-edges2 = cv.Canny(blur, 10, 60)
-edges3 = cv.Canny(blur, 5, 30)
+    dark_mask = cv.inRange(hsv, (0, 0, 0), (180, 90, 120))
+    dark_mask = cv.morphologyEx(
+        dark_mask,
+        cv.MORPH_CLOSE,
+        np.ones((10, 10), np.uint8),
+        iterations=3
+    )
 
-cv.imshow("GRAY", gray)
-cv.imshow("BLUR", blur)
-cv.imshow("CANNY (30,100)", edges1)
-cv.imshow("CANNY (10,60)", edges2)
-cv.imshow("CANNY (5,30)", edges3)
+    cnts, _ = cv.findContours(dark_mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
 
+    img_area = output.shape[0] * output.shape[1]
+    print(f"Total contours found: {len(cnts)}")
+
+    for c in cnts:
+        area = cv.contourArea(c)
+        if area < img_area * 0.01:
+            continue
+
+        rect = cv.minAreaRect(c)
+        box = cv.boxPoints(rect)
+        box = np.int32(box)
+
+        w, h = rect[1]
+        if w == 0 or h == 0:
+            continue
+
+        aspect_ratio = max(w, h) / min(w, h)
+        if not (1.8 < aspect_ratio < 4.5):
+            continue
+
+        cv.drawContours(output, [box], 0, (0, 255, 0), 2)
+
+    return output
+
+
+image = cv.imread("images/extra/good_20.jpg")
+if image is None:
+    raise FileNotFoundError("Image not found")
+
+processed =preprocess_image(image)
+
+cv.imshow("Detected Cards", processed)
 cv.waitKey(0)
+cv.destroyAllWindows()
