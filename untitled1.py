@@ -5,7 +5,7 @@ Created on Sat Dec 13 17:42:32 2025
 @author: zahra
 """
 
-import cv2 as cv
+import cv2 as cv #type: ignore
 import numpy as np
 
 def image_processing(image):

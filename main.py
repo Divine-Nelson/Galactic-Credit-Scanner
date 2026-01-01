@@ -1,64 +1,57 @@
 # -*- coding: utf-8 -*-
 """
 Star Wars Credit Detection – MAIN ENTRY FILE
-Works with the final patched detection.py
+Compatible with FINAL multi-card features.py
 """
 
 import argparse
 import os
-import glob
 import cv2 #type: ignore
-from features import analyze_image, REF_CARD
+from analyzer import analyze_image
 
-TOTAL_SUM = 0
-REF_CARD["w"] = None
-REF_CARD["h"] = None
-REF_CARD["ratio"] = None
+# Optional Basler support
+try:
+    from pypylon import pylon #type: ignore
+    BASLER_AVAILABLE = True
+except ImportError:
+    BASLER_AVAILABLE = False
+
+
 # ================================================================
-#  IMAGE PATH HANDLING
+# IMAGE PATH HANDLING
 # ================================================================
 
 def list_image_paths(path):
-    """Return list of image file paths from a file or directory."""
     if os.path.isdir(path):
-        files = []
-        for f in os.listdir(path):
-            full = os.path.join(path, f)
-            if os.path.isfile(full):
-                ext = os.path.splitext(f)[1].lower()
-                if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]:
-                    files.append(full)
-        return sorted(files)
+        return sorted([
+            os.path.join(path, f)
+            for f in os.listdir(path)
+            if os.path.splitext(f)[1].lower()
+            in [".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"]
+        ])
     return [path]
 
 
-
 def ensure_dir(path):
-    if path is None:
-        return None
-    os.makedirs(path, exist_ok=True)
+    if path:
+        os.makedirs(path, exist_ok=True)
     return path
 
 
-def preprocess_image(image):
-    """Resize image if too large for faster processing."""
-    max_dim = 1500
+def preprocess_image(image, max_dim=1500):
     h, w = image.shape[:2]
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        image = cv2.resize(image, (new_w, new_h))
-    
+        image = cv2.resize(image, (int(w*scale), int(h*scale)))
     return image
 
+
 # ================================================================
-#  PROCESS IMAGES
+# IMAGE PROCESSING
 # ================================================================
 
-def process_images(path, display, save_dir):
-    global TOTAL_SUM
-
+def process_images(path, display=False, save_dir=None):
+    run_total = 0
     paths = list_image_paths(path)
 
     if not paths:
@@ -68,65 +61,56 @@ def process_images(path, display, save_dir):
     for p in paths:
         print(f"\nProcessing: {p}")
         img = cv2.imread(p)
-
         if img is None:
-            print("Could not read image.")
+            print(f"❌ Could not read image: {p}")
             continue
 
         img = preprocess_image(img)
-        result = analyze_image(img)
+        result = analyze_image(img, video_mode=False)
+
+
         overlay = result["overlay"]
-
         cards = result["cards"]
-        if cards:
-            card = cards[0]
+        image_total = result["total_value"]
 
-            print("Digits:", card["digits"])
-            print("Digits Group:", card["digits_groups"])
-            #print("Total Value:", card["total_value"])
-            print("Color:", card["color"])
-            print("Value:", card["value"])
-            print("Fake:", card["fake"])
+        print(f"Detected {len(cards)} cards.")
+        print(f"Image total value: {image_total}")
 
-            # 💰 Money-counter logic
-            if not card["fake"]:
-                TOTAL_SUM += card["value"]
+        for i, card in enumerate(cards, 1):
+            print(f"  Card {i}:")
+            print(f"    Digits: {card['digits']}")
+            print(f"    Color : {card['color']}")
+            print(f"    Value : {card['value']}")
+            print(f"    Fake  : {card['fake']}")
 
-            print("Running total:", TOTAL_SUM)
+        run_total += image_total
+        print(f"Running total: {run_total}")
 
-        else:
-            print("No card detected.")
-
-        # Display window
         if display:
             cv2.imshow("Result", overlay)
-
-            if result.get("dbg_card") is not None:
-                cv2.imshow("Detected Card Contour", result["dbg_card"])
-
             cv2.waitKey(0)
 
-        # Save if requested
         if save_dir:
             name = os.path.splitext(os.path.basename(p))[0]
-            out_path = os.path.join(save_dir, f"{name}_overlay.png")
-            cv2.imwrite(out_path, overlay)
+            cv2.imwrite(
+                os.path.join(save_dir, f"{name}_overlay.png"),
+                overlay
+            )
 
     if display:
-        cv2.waitKey(0)
         cv2.destroyAllWindows()
 
+    print(f"\n✅ FINAL TOTAL VALUE: {run_total}")
 
 
 # ================================================================
-#  PROCESS VIDEO OR WEBCAM
+# VIDEO / WEBCAM
 # ================================================================
 
-def process_video(source, display, save_dir):
+def process_video(source, display=False, save_dir=None):
     cap = cv2.VideoCapture(source)
-
     if not cap.isOpened():
-        print("Cannot open video/webcam.")
+        print("❌ Cannot open video/webcam.")
         return
 
     idx = 0
@@ -135,19 +119,20 @@ def process_video(source, display, save_dir):
         if not ret:
             break
 
-        result = analyze_image(frame)
+        result = analyze_image(frame, video_mode=True)
+
         overlay = result["overlay"]
 
         if display:
             cv2.imshow("Result", overlay)
-            key = cv2.waitKey(1) & 0xFF
-            if key in [27, ord('q')]:
+            if cv2.waitKey(1) & 0xFF in [27, ord('q')]:
                 break
 
         if save_dir:
-            save_path = os.path.join(save_dir, f"frame_{idx}.png")
-            cv2.imwrite(save_path, overlay)
-
+            cv2.imwrite(
+                os.path.join(save_dir, f"frame_{idx}.png"),
+                overlay
+            )
         idx += 1
 
     cap.release()
@@ -156,7 +141,52 @@ def process_video(source, display, save_dir):
 
 
 # ================================================================
-#  ARGUMENT PARSER
+# BASLER REAL-TIME
+# ================================================================
+
+def process_basler_realtime(display=False, save_dir=None):
+    if not BASLER_AVAILABLE:
+        print("❌ Basler SDK not available.")
+        return
+
+    camera = pylon.InstantCamera(
+        pylon.TlFactory.GetInstance().CreateFirstDevice()
+    )
+    camera.Open()
+    camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
+
+    converter = pylon.ImageFormatConverter()
+    converter.OutputPixelFormat = pylon.PixelType_BGR8packed
+    converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
+
+    idx = 0
+    while camera.IsGrabbing():
+        grab = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+        if grab.GrabSucceeded():
+            frame = converter.Convert(grab).GetArray()
+            result_data = analyze_image(frame, video_mode=True)
+            overlay = result_data["overlay"]
+
+            if display:
+                cv2.imshow("Basler Result", overlay)
+                if cv2.waitKey(1) & 0xFF in [27, ord('q')]:
+                    break
+
+            if save_dir:
+                cv2.imwrite(
+                    os.path.join(save_dir, f"basler_{idx}.png"),
+                    overlay
+                )
+            idx += 1
+        grab.Release()
+
+    camera.StopGrabbing()
+    camera.Close()
+    cv2.destroyAllWindows()
+
+
+# ================================================================
+# ARGUMENT PARSER
 # ================================================================
 
 def parse_args():
@@ -164,33 +194,30 @@ def parse_args():
     parser.add_argument("--images", type=str, help="Image file or folder")
     parser.add_argument("--video", type=str, help="Video file")
     parser.add_argument("--webcam", type=int, help="Webcam index")
-    parser.add_argument("--display", action="store_true", help="Show overlay window")
-    parser.add_argument("--save", type=str, help="Directory to save output images")
+    parser.add_argument("--basler", action="store_true", help="Use Basler camera")
+    parser.add_argument("--display", action="store_true", help="Show overlay")
+    parser.add_argument("--save", type=str, help="Save output directory")
     return parser.parse_args()
 
 
 # ================================================================
-#  MAIN FUNCTION
+# MAIN
 # ================================================================
 
 def main():
     args = parse_args()
     save_dir = ensure_dir(args.save)
 
-    # Priority: images → video → webcam
     if args.images:
         process_images(args.images, args.display, save_dir)
-        return
-
-    if args.video:
+    elif args.video:
         process_video(args.video, args.display, save_dir)
-        return
-
-    if args.webcam is not None:
+    elif args.webcam is not None:
         process_video(args.webcam, args.display, save_dir)
-        return
-
-    print("No input provided. Use --images, --video, or --webcam.")
+    elif args.basler:
+        process_basler_realtime(args.display, save_dir)
+    else:
+        print("No input provided.")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
-from pypylon import pylon
-import cv2
+from pypylon import pylon #type: ignore
+import cv2 #type: ignore
 
 # Initialize camera
 camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())

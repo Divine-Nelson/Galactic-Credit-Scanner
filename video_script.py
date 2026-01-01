@@ -1,17 +1,33 @@
-import cv2
-from pypylon import pylon
+import cv2 #type: ignore
+import os
+from pypylon import pylon #type: ignore
+
+os.makedirs("dataset", exist_ok=True)
 
 camera = pylon.InstantCamera(pylon.TlFactory.GetInstance().CreateFirstDevice())
 camera.Open()
 camera.StartGrabbing(pylon.GrabStrategy_LatestImageOnly)
-converter = pylon.ImageFormatConverter()
 
+converter = pylon.ImageFormatConverter()
 converter.OutputPixelFormat = pylon.PixelType_BGR8packed
 converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
-fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-out = cv2.VideoWriter("dataset/conveyor_video.mp4", fourcc, 30, (1280, 720))
+# Grab ONE frame first to get size
+result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
+img = converter.Convert(result)
+frame = img.GetArray()
+h, w = frame.shape[:2]
+result.Release()
 
+fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+out = cv2.VideoWriter(
+    "dataset/conveyor_video.avi",
+    fourcc,
+    30,
+    (w, h)
+)
+
+assert out.isOpened(), "VideoWriter failed"
 
 while camera.IsGrabbing():
     result = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
@@ -23,8 +39,10 @@ while camera.IsGrabbing():
         out.write(frame)
         cv2.imshow("Recording…", frame)
 
-        if cv2.waitKey(1) == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
+    result.Release()
 
 out.release()
 camera.StopGrabbing()
