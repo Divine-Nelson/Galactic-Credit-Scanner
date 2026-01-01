@@ -6,3 +6,7 @@
 /.coverage
 /.hypothesis/
 env/
+images/
+dataset/
+videos/
+output/
