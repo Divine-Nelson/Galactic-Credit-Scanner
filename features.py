@@ -7,11 +7,80 @@ Author: Divine Ezeilo
 import cv2  # type: ignore
 import numpy as np
 import math
-from collections import Counter
+from collections import Counter, deque
+
+#GLobal Constants
+BLUE_WIDTH_REF = deque(maxlen=3)
+
 
 # ==========================================================
 # CARD DETECTION
 # ==========================================================
+def detect_card(image):
+    """
+    Detect the card, return:
+    - warped card (for chip detection)
+    - debug image (original with contour)
+    - card metrics for fake detection
+    """
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # 1. Dark card segmentation
+    dark_mask = cv2.inRange(hsv, (0, 0, 0), (180, 90, 120))
+    dark_mask = cv2.morphologyEx(
+        dark_mask,
+        cv2.MORPH_CLOSE,
+        np.ones((15, 15), np.uint8),
+        iterations=3
+    )
+
+    cnts, _ = cv2.findContours(
+        dark_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if not cnts:
+        return None, None, None
+    
+
+    # 2. Pick largest contour (the card)
+    card_c = max(cnts, key=cv2.contourArea)
+    area = cv2.contourArea(card_c)
+
+    # Reject tiny false positives
+    if area < image.shape[0] * image.shape[1] * 0.02:
+        return None, None, None
+
+    # 3. Bounding box → SIZE MEASUREMENT (important!)
+    x, y, w, h = cv2.boundingRect(card_c)
+    aspect_ratio = w / h
+
+    card_metrics = {
+        "bbox_w": w,
+        "bbox_h": h,
+        "aspect_ratio": aspect_ratio,
+        "area": area
+    }
+
+    # 4. Perspective warp for later chip detection
+    peri = cv2.arcLength(card_c, True)
+    approx = cv2.approxPolyDP(card_c, 0.02 * peri, True)
+
+    if len(approx) == 4:
+        box = approx.reshape(4, 2).astype(np.float32)
+    else:
+        rect = cv2.minAreaRect(card_c)
+        box = cv2.boxPoints(rect).astype(np.float32)
+
+    warped = warp_card(image, box)
+
+    # 5. Debug image (persistent contour)
+    dbg = image.copy()
+    cv2.drawContours(dbg, [card_c], -1, (0, 255, 0), 2)
+    cv2.rectangle(dbg, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    print(card_metrics)
+    return warped, dbg, card_metrics
+
 
 def detect_many_cards(image):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -42,9 +111,9 @@ def detect_many_cards(image):
         if rw == 0 or rh == 0:
             continue
 
-        w = max(rw, rh)
-        h = min(rw, rh)
-        ratio = w / (h + 1e-6)
+        rot_w = max(rw, rh)
+        rot_h = min(rw, rh)
+        ratio = rot_w / (rot_h + 1e-6)
 
         if not (1.8 <= ratio <= 4.9):
             continue
@@ -59,11 +128,18 @@ def detect_many_cards(image):
                 "bbox_y": by,
                 "bbox_w": bw,
                 "bbox_h": bh,
-                "rot_w": w,
-                "rot_h": h,
-                "ratio": ratio
-            }
+                "rot_w": rot_w,
+                "rot_h": rot_h,
+                "ratio": ratio,
+                "rel_area": area / img_area,
+                "area": area
+            },
+            "contours": c
         })
+
+    """for card in cards:
+        rot_w = card["metrics"]["rot_w"]
+        print(rot_w)"""
 
     return cards
 
@@ -140,7 +216,10 @@ def detect_chips(card):
             chips.append({
                 "color": color,
                 "chip_type": classify_chip(w),
-                "center": (x + w // 2, y + h // 2)
+                "center": (x + w // 2, y + h // 2),
+                "bbox": (x, y, w, h),
+                "w": w,
+                "h": h,
             })
 
     return chips
@@ -206,36 +285,67 @@ def compute_output_board(color, digits):
 # ==========================================================
 
 def is_fake_card(metrics, chips, dom_color, digits, invalid_digit):
-    ratio = metrics["ratio"]
-    area  = metrics["bbox_w"] * metrics["bbox_h"]
-    width = metrics["bbox_w"]
-    height= metrics["bbox_h"]
+    rot_w  = metrics["rot_w"]
+    rot_h  = metrics["rot_h"]
+    ratio  = metrics["ratio"]
+    area   = metrics["area"]
 
     # -------------------------------
-    # SHAPE (aspect ratio)
+    # SHAPE (rotation invariant)
     # -------------------------------
-    if dom_color == "red" and not (1.9 <= ratio <= 2.7):
-        return True, "Aspect ratio mismatch"
+    if dom_color == "red":
+        if not (1.8 <= ratio <= 2.7):
+            return True, "Aspect ratio mismatch"
 
-    if dom_color == "yellow" and not (2.7 <= ratio <= 3.9):
-        return True, "Aspect ratio mismatch"
+        if rot_h > 220:
+            return True, "Red card too thick"
 
-    if dom_color == "blue" and not (3.8 <= ratio <= 5.0):
-        return True, "Aspect ratio mismatch"
+        if area > 100_000:
+            return True, "Red card too large"
+
+    elif dom_color == "yellow":
+        if not (2.4 <= ratio <= 3.9):
+            return True, "Aspect ratio mismatch"
+
+        if rot_h > 245:
+            return True, "Yellow card too thick"
+
+        if area > 140_000:
+            return True, "Yellow card too large"
+
+    elif dom_color == "blue":
+        if not (3.0 <= ratio <= 5.0):
+            return True, "Aspect ratio mismatch"
+
+        if not (810 < rot_w < 1100):
+            return True, "Blue card width mismatch"
+
+        if rot_h > 250:
+            return True, "Blue card too thick"
+
+        if area > 190_000:
+            return True, "Blue card too large"
 
     # -------------------------------
-    # SIZE (THIS IS WHAT YOU WERE MISSING)
+    # MINIMUM SIZE (rotation invariant)
     # -------------------------------
-    MIN_SIZE = {
-        "red":    {"area": 93000, "width": 380,},
-        "yellow": {"area": 130000, "width": 420},
-        "blue":   {"area": 150000, "width": 460},
+    MIN_AREA = {
+        "red":    78_000,
+        "yellow": 110_000,
+        "blue":   140_000,
     }
-    min_height = 190  # Minimum height for all cards
-    limits = MIN_SIZE[dom_color]
 
-    if width < limits["width"] or area < limits["area"] or height < min_height:
+    MIN_HEIGHT = {
+        "red":    110,
+        "yellow": 140,
+        "blue":   160,
+    }
+
+    if area < MIN_AREA[dom_color]:
         return True, "Card too small"
+
+    if rot_h < MIN_HEIGHT[dom_color]:
+        return True, "Card too thin"
 
     # -------------------------------
     # DIGITS

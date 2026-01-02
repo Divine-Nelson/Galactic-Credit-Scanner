@@ -29,6 +29,33 @@ class CreditAnalyzer:
             chips = detect_chips(warped)
             if not chips:
                 continue
+            for c in chips:
+                cx, cy, cw, ch = c["bbox"]
+
+                # Map chip coords from warped → original image
+                ox = m["bbox_x"] + int(cx * m["bbox_w"] / warped.shape[1])
+                oy = m["bbox_y"] + int(cy * m["bbox_h"] / warped.shape[0])
+                ow = int(cw * m["bbox_w"] / warped.shape[1])
+                oh = int(ch * m["bbox_h"] / warped.shape[0])
+
+                cv2.rectangle(
+                    overlay,
+                    (ox, oy),
+                    (ox + ow, oy + oh),
+                    (255, 0, 0),
+                    2
+                )
+
+                cv2.putText(
+                    overlay,
+                    str(c["chip_type"]),
+                    (ox, oy - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 0, 0),
+                    2
+                )
+            
 
             dom_color = Counter(c["color"] for c in chips).most_common(1)[0][0]
             digits, invalid = decode_digits(chips)
@@ -57,6 +84,7 @@ class CreditAnalyzer:
 
             x, y, w, h = m["bbox_x"], m["bbox_y"], m["bbox_w"], m["bbox_h"]
             cv2.rectangle(overlay, (x, y), (x + w, y + h), color, 3)
+            #cv2.drawContours(overlay, [card["contours"]], -1, color, 2)
             cv2.putText(
                 overlay, label,
                 (x, y - 10),

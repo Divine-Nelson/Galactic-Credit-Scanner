@@ -60,7 +60,9 @@ def preprocess_image(image):
             "width_px": width_px,
             "height_px": height_px,
             "aspect_ratio": aspect_ratio,
-            "area": area
+            "area": area,
+            "rot_width": w_rot,
+            "rot_height": h_rot
         }
         cards_info.append(card_data)
 
@@ -68,7 +70,7 @@ def preprocess_image(image):
         cv.rectangle(output, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
         # Draw label
-        label = f"Card {card_id} | W:{width_px} H:{height_px}"
+        label = f"Card {card_id} | W:{width_px} H:{height_px} rot_w:{w_rot:.1f} rot_h:{h_rot:.1f}"
         cv.putText(
             output,
             label,
@@ -83,7 +85,8 @@ def preprocess_image(image):
         print(
             f"Card {card_id}: "
             f"Width={width_px}px, Height={height_px}px, "
-            f"Aspect={aspect_ratio:.2f}, Area={area:.0f}"
+            f"Aspect={aspect_ratio:.2f}, Area={area:.0f}, "
+            f"rot_w={w_rot:.1f}, rot_h={h_rot:.1f}"
         )
 
         card_id += 1
@@ -95,5 +98,5 @@ def preprocess_image(image):
     return output, cards_info
 
 
-img = cv.imread("images/zahras_images/16.bmp")
+img = cv.imread("dataset/frame.jpg")
 preprocessed_img, cards = preprocess_image(img)
