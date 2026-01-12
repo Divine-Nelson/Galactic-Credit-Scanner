@@ -82,13 +82,19 @@ def detect_card(image):
     return warped, dbg, card_metrics
 
 
+# ==========================================================
+# MULTI-CARD DETECTION
+# ==========================================================
+
 def detect_many_cards(image):
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-
+    
     dark_mask = cv2.inRange(hsv, (0, 0, 0), (180, 90, 120))
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 15))
+
     dark_mask = cv2.morphologyEx(
         dark_mask, cv2.MORPH_CLOSE,
-        np.ones((15, 15), np.uint8), 3
+        kernel, 3
     )
 
     cnts, _ = cv2.findContours(
@@ -98,6 +104,7 @@ def detect_many_cards(image):
     img_h, img_w = image.shape[:2]
     img_area = img_h * img_w
     cards = []
+    #cards_id = 1
 
     for c in cnts:
         area = cv2.contourArea(c)
@@ -132,16 +139,52 @@ def detect_many_cards(image):
                 "rot_h": rot_h,
                 "ratio": ratio,
                 "rel_area": area / img_area,
-                "area": area
+                "area": area,
             },
             "contours": c
         })
 
     """for card in cards:
-        rot_w = card["metrics"]["rot_w"]
-        print(rot_w)"""
-
+        ratio = card["metrics"]["ratio"]
+        print(ratio)"""
     return cards
+
+# ==========================================================
+# OVERLAP DETECTION
+# ==========================================================
+def detect_overlap(cards):
+    overlapping_pairs = []
+
+    for i in range(len(cards)):
+        xi, yi, wi, hi = (
+            cards[i]["metrics"]["bbox_x"],
+            cards[i]["metrics"]["bbox_y"],
+            cards[i]["metrics"]["bbox_w"],
+            cards[i]["metrics"]["bbox_h"],
+        )
+        rect_i = (xi, yi, xi + wi, yi + hi)
+
+        for j in range(i + 1, len(cards)):
+            xj, yj, wj, hj = (
+                cards[j]["metrics"]["bbox_x"],
+                cards[j]["metrics"]["bbox_y"],
+                cards[j]["metrics"]["bbox_w"],
+                cards[j]["metrics"]["bbox_h"],
+            )
+            rect_j = (xj, yj, xj + wj, yj + hj)
+
+            if rectangles_overlap(rect_i, rect_j):
+                overlapping_pairs.append((i, j))
+
+    return overlapping_pairs
+
+def rectangles_overlap(a, b):
+    return not (
+        a[2] < b[0] or
+        a[0] > b[2] or
+        a[3] < b[1] or
+        a[1] > b[3]
+    )
 
 
 # ==========================================================
@@ -149,6 +192,7 @@ def detect_many_cards(image):
 # ==========================================================
 
 def order_points(pts):
+    # top-left, top-right, bottom-right, bottom-left.
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
     diff = np.diff(pts, axis=1)
@@ -179,7 +223,7 @@ def warp_card(image, box):
 def classify_chip(w_px):
     if w_px <= 45:
         return 1
-    elif w_px < 100:
+    elif w_px > 45 and w_px < 100:
         return 2
     else:
         return 3
@@ -196,9 +240,9 @@ def detect_chips(card):
     blue_mask = cv2.inRange(hsv, (90, 70, 40), (140, 255, 255))
 
     masks = {
-        "red": red_mask,
-        "yellow": yellow_mask,
-        "blue": blue_mask
+        "bronze": red_mask,
+        "gold": yellow_mask,
+        "silver": blue_mask
     }
 
     chips = []
@@ -212,6 +256,7 @@ def detect_chips(card):
                 continue
 
             x, y, w, h = cv2.boundingRect(c)
+
 
             chips.append({
                 "color": color,
@@ -251,7 +296,7 @@ def figure_from_array(arr):
         return 6 + counts.get(1, 0)
     if counts.get(2, 0):
         return 3 + counts.get(1, 0)
-    return counts.get(1, 0) - 1
+    return counts.get(1, 0)-1
 
 
 def decode_digits(chips):
@@ -271,11 +316,11 @@ def decode_digits(chips):
 def compute_output_board(color, digits):
     if not digits:
         return 0
-    if color == "yellow":
+    if color == "gold":
         return int("".join(map(str, digits))) * 10
-    if color == "blue":
+    if color == "silver":
         return int("".join(map(str, digits)))
-    if color == "red":
+    if color == "bronze":
         return math.prod(d for d in digits if d > 0)
     return 0
 
@@ -284,61 +329,63 @@ def compute_output_board(color, digits):
 # FAKE CHECK (GEOMETRY-FIRST)
 # ==========================================================
 
-def is_fake_card(metrics, chips, dom_color, digits, invalid_digit):
+def is_fake_card(metrics, chips, dom_color, digits, invalid_digit, video_mode=False):
     rot_w  = metrics["rot_w"]
     rot_h  = metrics["rot_h"]
     ratio  = metrics["ratio"]
     area   = metrics["area"]
+    width = metrics["bbox_w"]
+    height = metrics["bbox_h"]
 
     # -------------------------------
     # SHAPE (rotation invariant)
     # -------------------------------
-    if dom_color == "red":
-        if not (1.8 <= ratio <= 2.7):
+    if dom_color == "bronze":
+        if not (1.9 <= ratio <= 2.5):
             return True, "Aspect ratio mismatch"
 
-        if rot_h > 220:
-            return True, "Red card too thick"
+        if rot_h > 290:
+            return True, "Bronze card too thick"
 
-        if area > 100_000:
-            return True, "Red card too large"
+        if area > 150_000:
+            return True, "Bronze card too large"
 
-    elif dom_color == "yellow":
-        if not (2.4 <= ratio <= 3.9):
+    elif dom_color == "gold":
+        if not (2.65 <= ratio <= 3.5):
             return True, "Aspect ratio mismatch"
 
-        if rot_h > 245:
-            return True, "Yellow card too thick"
+        if rot_h > 315:
+            return True, "Gold card too thick"
 
-        if area > 140_000:
-            return True, "Yellow card too large"
+        if area > 230_000:
+            return True, "Gold card too large"
 
-    elif dom_color == "blue":
+    elif dom_color == "silver":
         if not (3.0 <= ratio <= 5.0):
             return True, "Aspect ratio mismatch"
+        
+        if not (850 < rot_w < 1300):
+            return True, "Silver card height mismatch"
 
-        if not (810 < rot_w < 1100):
-            return True, "Blue card width mismatch"
+        if rot_h > 340:
+            return True, "Silver card too thick"
 
-        if rot_h > 250:
-            return True, "Blue card too thick"
-
-        if area > 190_000:
-            return True, "Blue card too large"
+        if area > 315_000:
+            return True, "Silver card too large"
 
     # -------------------------------
     # MINIMUM SIZE (rotation invariant)
     # -------------------------------
     MIN_AREA = {
-        "red":    78_000,
-        "yellow": 110_000,
-        "blue":   140_000,
+        "bronze":    78_000,
+        "gold": 130_000,
+        "silver":   140_000,
     }
 
     MIN_HEIGHT = {
-        "red":    110,
-        "yellow": 140,
-        "blue":   160,
+        "bronze":    110,
+        "gold": 140,
+        "silver":   160,
     }
 
     if area < MIN_AREA[dom_color]:
@@ -358,3 +405,5 @@ def is_fake_card(metrics, chips, dom_color, digits, invalid_digit):
         return True, "Zero value"
 
     return False, "Real"
+
+

@@ -7,7 +7,7 @@ Compatible with FINAL multi-card features.py
 import argparse
 import os
 import cv2 #type: ignore
-from analyzer import analyze_image
+from analyzer import CreditAnalyzer
 
 # Optional Basler support
 try:
@@ -38,7 +38,7 @@ def ensure_dir(path):
     return path
 
 
-def preprocess_image(image, max_dim=1500):
+def preprocess_image(image, max_dim=2000):
     h, w = image.shape[:2]
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
@@ -66,23 +66,14 @@ def process_images(path, display=False, save_dir=None):
             continue
 
         img = preprocess_image(img)
-        result = analyze_image(img, video_mode=False)
 
+        analyzer = CreditAnalyzer(video_mode=False)
+        result = analyzer.analyze(img)
 
         overlay = result["overlay"]
-        cards = result["cards"]
         image_total = result["total_value"]
 
-        print(f"Detected {len(cards)} cards.")
         print(f"Image total value: {image_total}")
-
-        for i, card in enumerate(cards, 1):
-            print(f"  Card {i}:")
-            print(f"    Digits: {card['digits']}")
-            print(f"    Color : {card['color']}")
-            print(f"    Value : {card['value']}")
-            print(f"    Fake  : {card['fake']}")
-
         run_total += image_total
         print(f"Running total: {run_total}")
 
@@ -103,6 +94,7 @@ def process_images(path, display=False, save_dir=None):
     print(f"\n✅ FINAL TOTAL VALUE: {run_total}")
 
 
+
 # ================================================================
 # VIDEO / WEBCAM
 # ================================================================
@@ -113,13 +105,15 @@ def process_video(source, display=False, save_dir=None):
         print("❌ Cannot open video/webcam.")
         return
 
+    analyzer = CreditAnalyzer(video_mode=True)  # ✅ CREATE ONCE
+
     idx = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
-        result = analyze_image(frame, video_mode=True)
+        result = analyzer.analyze(frame)  # ✅ REUSE
 
         overlay = result["overlay"]
 
@@ -138,6 +132,7 @@ def process_video(source, display=False, save_dir=None):
     cap.release()
     if display:
         cv2.destroyAllWindows()
+
 
 
 # ================================================================
@@ -159,12 +154,15 @@ def process_basler_realtime(display=False, save_dir=None):
     converter.OutputPixelFormat = pylon.PixelType_BGR8packed
     converter.OutputBitAlignment = pylon.OutputBitAlignment_MsbAligned
 
+    analyzer = CreditAnalyzer(video_mode=True)  # ✅ CREATE ONCE
+
     idx = 0
     while camera.IsGrabbing():
         grab = camera.RetrieveResult(5000, pylon.TimeoutHandling_ThrowException)
         if grab.GrabSucceeded():
             frame = converter.Convert(grab).GetArray()
-            result_data = analyze_image(frame, video_mode=True)
+
+            result_data = analyzer.analyze(frame)  # ✅ REUSE
             overlay = result_data["overlay"]
 
             if display:
@@ -183,6 +181,7 @@ def process_basler_realtime(display=False, save_dir=None):
     camera.StopGrabbing()
     camera.Close()
     cv2.destroyAllWindows()
+
 
 
 # ================================================================
@@ -224,10 +223,7 @@ if __name__ == "__main__":
     main()
 
 """
-python main.py --images images/good/good_1.jpg  --display
-python main.py --images images/sedate_images/  --display
-python main.py --images images/fake/  --display
-python main.py --images images/zahras_images/  --display
-python main.py --video videos/test_video.mp4  --display
-python main.py --webcam 0  --display
+python main.py --images images/zahras_images/1.bmp  --display
+python main.py --video dataset/conveyor_video.avi  --display
+python main.py --basler  --display
 """

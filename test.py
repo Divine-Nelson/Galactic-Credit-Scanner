@@ -2,17 +2,31 @@ import cv2 as cv  # type: ignore
 import numpy as np
 import os
 
+def preprocess_image(image, max_dim=1500):
+    h, w = image.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        image = cv.resize(image, (int(w*scale), int(h*scale)))
+    return image
 
-def preprocess_image(image):
+def preprocess_dark_mask(image):
+    image = preprocess_image(image)
     output = image.copy()
+    cv.imshow("Original Image", image)
+    cv.waitKey(0)
+    cv.destroyAllWindows()
 
     hsv = cv.cvtColor(output, cv.COLOR_BGR2HSV)
 
     dark_mask = cv.inRange(hsv, (0, 0, 0), (180, 90, 120))
+    cv.imshow("Dark Mask", dark_mask)
+    cv.waitKey(0)
+    cv.destroyAllWindows()
+    kernel = cv.getStructuringElement(cv.MORPH_RECT, (15, 15))
     dark_mask = cv.morphologyEx(
         dark_mask,
         cv.MORPH_CLOSE,
-        np.ones((10, 10), np.uint8),
+        kernel,
         iterations=3
     )
     cv.imshow("Dark Mask", dark_mask)
@@ -37,6 +51,9 @@ def preprocess_image(image):
         if w_rot == 0 or h_rot == 0:
             continue
 
+        W = max(w_rot, h_rot)
+        H = min(w_rot, h_rot)
+
         aspect_ratio = max(w_rot, h_rot) / min(w_rot, h_rot)
         if not (1.8 < aspect_ratio < 4.5):
             continue
@@ -53,6 +70,10 @@ def preprocess_image(image):
         width_px  = rightmost[0] - leftmost[0]
         height_px = bottommost[1] - topmost[1]
 
+        img_h, img_w = image.shape[:2]
+        rel_w = W / img_w
+        rel_h = H / img_h
+
         # Store card info
         card_data = {
             "id": card_id,
@@ -62,12 +83,15 @@ def preprocess_image(image):
             "aspect_ratio": aspect_ratio,
             "area": area,
             "rot_width": w_rot,
-            "rot_height": h_rot
+            "rot_height": h_rot,
+            "rel_w": rel_w,
+            "rel_h": rel_h
         }
         cards_info.append(card_data)
 
         # Draw bounding box
         cv.rectangle(output, (x, y), (x + w, y + h), (0, 255, 0), 2)
+        #cv.drawContours(output, [c], -1, (255, 0, 0), 2)
 
         # Draw label
         label = f"Card {card_id} | W:{width_px} H:{height_px} rot_w:{w_rot:.1f} rot_h:{h_rot:.1f}"
@@ -86,7 +110,8 @@ def preprocess_image(image):
             f"Card {card_id}: "
             f"Width={width_px}px, Height={height_px}px, "
             f"Aspect={aspect_ratio:.2f}, Area={area:.0f}, "
-            f"rot_w={w_rot:.1f}, rot_h={h_rot:.1f}"
+            f"rot_w={w_rot:.1f}, rot_h={h_rot:.1f}, "
+            f"rel_w={rel_w:.2f}, rel_h={rel_h:.2f}"
         )
 
         card_id += 1
@@ -98,5 +123,5 @@ def preprocess_image(image):
     return output, cards_info
 
 
-img = cv.imread("dataset/frame.jpg")
-preprocessed_img, cards = preprocess_image(img)
+img = cv.imread("images/extra/good_9.jpg")
+preprocessed_img, cards = preprocess_dark_mask(img)
